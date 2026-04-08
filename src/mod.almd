@@ -1,0 +1,364 @@
+// almide/svg — SVG document generation for Almide
+//
+//   svg.doc(800.0, 600.0, [...])           → root <svg> element
+//   svg.rect(10.0, 10.0, 200.0, 100.0)    → <rect>
+//   el |> svg.fill("#f00")                 → set fill attribute
+//   svg.render(el)                         → SVG string
+
+// ── Types ───────────────────────────────────────────
+
+type Element = {
+  tag: String,
+  attrs: Map[String, String],
+  children: List[Element],
+  content: String,
+}
+
+// ── Internal Helpers ────────────────────────────────
+
+local fn fmt(n: Float) -> String =
+  if n == float.floor(n) then int.to_string(float.to_int(n))
+  else float.to_string(n)
+
+local fn escape_xml(s: String) -> String =
+  s |> string.replace("&", "&amp;")
+    |> string.replace("<", "&lt;")
+    |> string.replace(">", "&gt;")
+
+local fn escape_attr(s: String) -> String =
+  s |> string.replace("&", "&amp;")
+    |> string.replace("<", "&lt;")
+    |> string.replace(">", "&gt;")
+    |> string.replace("\"", "&quot;")
+
+local fn format_points(points: List[(Float, Float)]) -> String =
+  points
+    |> list.map((p) => {
+      let (x, y) = p
+      "${fmt(x)},${fmt(y)}"
+    })
+    |> list.join(" ")
+
+// ── Element Factories ───────────────────────────────
+
+fn el(tag: String) -> Element =
+  Element { tag: tag, attrs: [:], children: [], content: "" }
+
+fn doc(width: Float, height: Float, children: List[Element]) -> Element = {
+  let base = el("svg")
+    |> attr("xmlns", "http://www.w3.org/2000/svg")
+    |> attr("width", fmt(width))
+    |> attr("height", fmt(height))
+    |> attr("viewBox", "0 0 ${fmt(width)} ${fmt(height)}")
+  { ...base, children: children }
+}
+
+fn rect(x: Float, y: Float, width: Float, height: Float) -> Element =
+  el("rect")
+    |> attr("x", fmt(x))
+    |> attr("y", fmt(y))
+    |> attr("width", fmt(width))
+    |> attr("height", fmt(height))
+
+fn circle(cx: Float, cy: Float, r: Float) -> Element =
+  el("circle")
+    |> attr("cx", fmt(cx))
+    |> attr("cy", fmt(cy))
+    |> attr("r", fmt(r))
+
+fn ellipse(cx: Float, cy: Float, rx: Float, ry: Float) -> Element =
+  el("ellipse")
+    |> attr("cx", fmt(cx))
+    |> attr("cy", fmt(cy))
+    |> attr("rx", fmt(rx))
+    |> attr("ry", fmt(ry))
+
+fn line(x1: Float, y1: Float, x2: Float, y2: Float) -> Element =
+  el("line")
+    |> attr("x1", fmt(x1))
+    |> attr("y1", fmt(y1))
+    |> attr("x2", fmt(x2))
+    |> attr("y2", fmt(y2))
+
+fn polyline(points: List[(Float, Float)]) -> Element =
+  el("polyline") |> attr("points", format_points(points))
+
+fn polygon(points: List[(Float, Float)]) -> Element =
+  el("polygon") |> attr("points", format_points(points))
+
+fn path(d: String) -> Element =
+  el("path") |> attr("d", d)
+
+fn text(x: Float, y: Float, body: String) -> Element = {
+  let base = el("text") |> attr("x", fmt(x)) |> attr("y", fmt(y))
+  { ...base, content: body }
+}
+
+fn group(children: List[Element]) -> Element = {
+  let base = el("g")
+  { ...base, children: children }
+}
+
+fn defs(children: List[Element]) -> Element = {
+  let base = el("defs")
+  { ...base, children: children }
+}
+
+fn use_ref(href: String, x: Float, y: Float) -> Element =
+  el("use")
+    |> attr("href", href)
+    |> attr("x", fmt(x))
+    |> attr("y", fmt(y))
+
+fn image(href: String, x: Float, y: Float, width: Float, height: Float) -> Element =
+  el("image")
+    |> attr("href", href)
+    |> attr("x", fmt(x))
+    |> attr("y", fmt(y))
+    |> attr("width", fmt(width))
+    |> attr("height", fmt(height))
+
+// ── Attribute Modifiers (pipe-friendly) ─────────────
+
+fn attr(element: Element, key: String, value: String) -> Element =
+  { ...element, attrs: map.set(element.attrs, key, value) }
+
+fn fill(element: Element, color: String) -> Element =
+  attr(element, "fill", color)
+
+fn stroke(element: Element, color: String) -> Element =
+  attr(element, "stroke", color)
+
+fn stroke_width(element: Element, w: Float) -> Element =
+  attr(element, "stroke-width", fmt(w))
+
+fn opacity(element: Element, value: Float) -> Element =
+  attr(element, "opacity", fmt(value))
+
+fn transform(element: Element, value: String) -> Element =
+  attr(element, "transform", value)
+
+fn class(element: Element, name: String) -> Element =
+  attr(element, "class", name)
+
+fn id(element: Element, name: String) -> Element =
+  attr(element, "id", name)
+
+fn font_size(element: Element, size: Float) -> Element =
+  attr(element, "font-size", fmt(size))
+
+fn font_family(element: Element, family: String) -> Element =
+  attr(element, "font-family", family)
+
+fn text_anchor(element: Element, anchor: String) -> Element =
+  attr(element, "text-anchor", anchor)
+
+fn rx(element: Element, value: Float) -> Element =
+  attr(element, "rx", fmt(value))
+
+fn ry(element: Element, value: Float) -> Element =
+  attr(element, "ry", fmt(value))
+
+fn dash_array(element: Element, pattern: String) -> Element =
+  attr(element, "stroke-dasharray", pattern)
+
+fn clip_path(element: Element, id_ref: String) -> Element =
+  attr(element, "clip-path", "url(#${id_ref})")
+
+fn style(element: Element, css: String) -> Element =
+  attr(element, "style", css)
+
+fn view_box(element: Element, min_x: Float, min_y: Float, width: Float, height: Float) -> Element =
+  attr(element, "viewBox", "${fmt(min_x)} ${fmt(min_y)} ${fmt(width)} ${fmt(height)}")
+
+// ── Tree Modifiers ──────────────────────────────────
+
+fn add_child(element: Element, child: Element) -> Element =
+  { ...element, children: element.children + [child] }
+
+fn with_children(element: Element, children: List[Element]) -> Element =
+  { ...element, children: children }
+
+fn with_content(element: Element, body: String) -> Element =
+  { ...element, content: body }
+
+// ── Transform Helpers ───────────────────────────────
+
+fn translate(x: Float, y: Float) -> String =
+  "translate(${fmt(x)}, ${fmt(y)})"
+
+fn rotate(angle: Float) -> String =
+  "rotate(${fmt(angle)})"
+
+fn rotate_around(angle: Float, cx: Float, cy: Float) -> String =
+  "rotate(${fmt(angle)}, ${fmt(cx)}, ${fmt(cy)})"
+
+fn scale(x: Float, y: Float) -> String =
+  "scale(${fmt(x)}, ${fmt(y)})"
+
+fn scale_uniform(s: Float) -> String =
+  "scale(${fmt(s)})"
+
+// ── Rendering ───────────────────────────────────────
+
+fn render(root: Element) -> String =
+  render_el(root, 0)
+
+local fn render_el(element: Element, depth: Int) -> String = {
+  let indent = string.repeat("  ", depth)
+  let attrs_str = render_attrs(element.attrs)
+  let has_children = not list.is_empty(element.children)
+  let has_content = not string.is_empty(element.content)
+  if not has_children and not has_content then
+    "${indent}<${element.tag}${attrs_str}/>"
+  else if has_content and not has_children then
+    "${indent}<${element.tag}${attrs_str}>${escape_xml(element.content)}</${element.tag}>"
+  else if has_content then {
+    let open = "${indent}<${element.tag}${attrs_str}>"
+    let text_line = "${indent}  ${escape_xml(element.content)}"
+    let body = element.children
+      |> list.map((child) => render_el(child, depth + 1))
+      |> list.join("\n")
+    "${open}\n${text_line}\n${body}\n${indent}</${element.tag}>"
+  }
+  else {
+    let open = "${indent}<${element.tag}${attrs_str}>"
+    let body = element.children
+      |> list.map((child) => render_el(child, depth + 1))
+      |> list.join("\n")
+    "${open}\n${body}\n${indent}</${element.tag}>"
+  }
+}
+
+local fn render_attrs(attrs: Map[String, String]) -> String = {
+  let pairs = map.entries(attrs)
+  if list.is_empty(pairs) then ""
+  else
+    " " + (pairs
+      |> list.map((pair) => {
+        let (k, v) = pair
+        "${k}=\"${escape_attr(v)}\""
+      })
+      |> list.join(" "))
+}
+
+// ── Tests ───────────────────────────────────────────
+
+test "empty rect renders self-closing" {
+  let r = rect(10.0, 20.0, 100.0, 50.0)
+  let out = render(r)
+  assert_eq(string.contains(out, "<rect"), true)
+  assert_eq(string.contains(out, "/>"), true)
+}
+
+test "fill pipe sets attribute" {
+  let r = rect(0.0, 0.0, 10.0, 10.0) |> fill("#f00")
+  let out = render(r)
+  assert_eq(string.contains(out, "fill=\"#f00\""), true)
+}
+
+test "text renders with content" {
+  let t = text(50.0, 100.0, "Hello")
+  let out = render(t)
+  assert_eq(string.contains(out, ">Hello</text>"), true)
+}
+
+test "text content is XML-escaped" {
+  let t = text(0.0, 0.0, "a < b & c")
+  let out = render(t)
+  assert_eq(string.contains(out, "a &lt; b &amp; c"), true)
+}
+
+test "group nests children" {
+  let g = group([
+    rect(0.0, 0.0, 10.0, 10.0),
+    circle(5.0, 5.0, 3.0),
+  ])
+  let out = render(g)
+  assert_eq(string.contains(out, "<g>"), true)
+  assert_eq(string.contains(out, "</g>"), true)
+  assert_eq(string.contains(out, "<rect"), true)
+  assert_eq(string.contains(out, "<circle"), true)
+}
+
+test "doc sets xmlns and viewBox" {
+  let d = doc(800.0, 600.0, [])
+  let out = render(d)
+  assert_eq(string.contains(out, "xmlns="), true)
+  assert_eq(string.contains(out, "viewBox=\"0 0 800 600\""), true)
+}
+
+test "fmt strips trailing .0 for integers" {
+  let r = rect(10.0, 20.0, 100.0, 50.0)
+  let out = render(r)
+  assert_eq(string.contains(out, "x=\"10\""), true)
+  assert_eq(string.contains(out, "y=\"20\""), true)
+}
+
+test "chained attributes via pipe" {
+  let r = rect(0.0, 0.0, 50.0, 50.0)
+    |> fill("#333")
+    |> stroke("#000")
+    |> stroke_width(2.0)
+    |> opacity(0.5)
+  let out = render(r)
+  assert_eq(string.contains(out, "fill=\"#333\""), true)
+  assert_eq(string.contains(out, "stroke=\"#000\""), true)
+  assert_eq(string.contains(out, "stroke-width=\"2\""), true)
+  assert_eq(string.contains(out, "opacity=\"0.5\""), true)
+}
+
+test "polygon renders points" {
+  let p = polygon([(0.0, 0.0), (100.0, 0.0), (50.0, 80.0)])
+  let out = render(p)
+  assert_eq(string.contains(out, "points=\"0,0 100,0 50,80\""), true)
+}
+
+test "transform helpers" {
+  assert_eq(translate(10.0, 20.0), "translate(10, 20)")
+  assert_eq(rotate(45.0), "rotate(45)")
+  assert_eq(scale(2.0, 3.0), "scale(2, 3)")
+}
+
+test "nested groups indent correctly" {
+  let g = group([
+    group([
+      circle(5.0, 5.0, 3.0),
+    ]),
+  ])
+  let out = render(g)
+  assert_eq(string.contains(out, "    <circle"), true)
+}
+
+test "el creates arbitrary elements" {
+  let custom = el("marker") |> id("arrow") |> attr("markerWidth", "10")
+  let out = render(custom)
+  assert_eq(string.contains(out, "<marker"), true)
+  assert_eq(string.contains(out, "id=\"arrow\""), true)
+}
+
+test "add_child appends to children" {
+  let g = group([rect(0.0, 0.0, 10.0, 10.0)])
+    |> add_child(circle(5.0, 5.0, 3.0))
+  let out = render(g)
+  assert_eq(string.contains(out, "<rect"), true)
+  assert_eq(string.contains(out, "<circle"), true)
+}
+
+test "attribute escaping in values" {
+  let r = rect(0.0, 0.0, 10.0, 10.0) |> attr("data-info", "a\"b&c")
+  let out = render(r)
+  assert_eq(string.contains(out, "data-info=\"a&quot;b&amp;c\""), true)
+}
+
+test "doc with children renders nested" {
+  let d = doc(400.0, 300.0, [
+    rect(10.0, 10.0, 100.0, 50.0) |> fill("#4A90D9"),
+    text(200.0, 150.0, "Hello") |> font_size(24.0),
+  ])
+  let out = render(d)
+  assert_eq(string.contains(out, "<svg"), true)
+  assert_eq(string.contains(out, "</svg>"), true)
+  assert_eq(string.contains(out, "  <rect"), true)
+  assert_eq(string.contains(out, "  <text"), true)
+}
