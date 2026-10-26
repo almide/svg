@@ -7,7 +7,7 @@
 // ── Helpers ─────────────────────────────────────────
 
 local fn fmt(n: Float) -> String =
-  if n == float.floor(n) then int.to_string(float.to_int(n))
+  if n == float.floor(n) then int.to_string(int.from_saturating(n))
   else float.to_string(n)
 
 // ── Commands ────────────────────────────────────────

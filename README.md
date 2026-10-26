@@ -33,7 +33,7 @@ let chart = svg.doc(800.0, 600.0, [
 ])
 
 // Write to file or serve over HTTP
-fs.write("chart.svg", svg.render(chart))
+fs.write_text("chart.svg", svg.render(chart))
 ```
 
 ## API

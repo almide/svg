@@ -17,7 +17,7 @@ type Element = {
 // ── Internal Helpers ────────────────────────────────
 
 local fn fmt(n: Float) -> String =
-  if n == float.floor(n) then int.to_string(float.to_int(n))
+  if n == float.floor(n) then int.to_string(int.from_saturating(n))
   else float.to_string(n)
 
 local fn escape_xml(s: String) -> String =
@@ -231,7 +231,7 @@ local fn render_el(element: Element, depth: Int) -> String = {
 }
 
 local fn render_attrs(attrs: Map[String, String]) -> String = {
-  let pairs = map.entries(attrs)
+  let pairs = map.to_list(attrs)
   if list.is_empty(pairs) then ""
   else
     " " + (pairs
