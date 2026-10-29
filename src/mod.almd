@@ -54,6 +54,14 @@ local fn escape_xml(s: String) -> String =
     |> string.replace("\"", "&quot;")
     |> string.replace("'", "&#39;")
 
+local fn format_points(points: List[(Float, Float)]) -> String =
+  points
+    |> list.map((p) => {
+      let (x, y) = p
+      "${fmt(x)},${fmt(y)}"
+    })
+    |> list.join(" ")
+
 local fn ascii(c: String) -> Bool = (string.to_codepoint(c) ?? 128) < 128
 
 local fn blank(c: String) -> Bool = (string.to_codepoint(c) ?? 0) <= 32
