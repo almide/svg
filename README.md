@@ -1,11 +1,20 @@
 # almide/svg
 
-SVG document generation for [Almide](https://github.com/almide/almide). Pure Almide, no compiler extensions, works on all targets.
+Safe SVG document generation for [Almide](https://github.com/almide/almide). Pure Almide, no compiler extensions, works on all targets.
+
+SVG is a document a browser runs script in, so this package owns the `image/svg+xml` media type (ADR-0032): `svg.render` returns a `SafeSvg`, a response `Body` served as `image/svg+xml`, and nothing it writes can run. Text and attribute values are escaped; element and attribute names are checked; `<script>`, `<style>`, `<foreignObject>`, `<iframe>`, `<object>`, `<embed>`, `<set>`, `<animate>`, event handlers (`on*`) and `style` are refused (the program aborts); a URL attribute (`href`, `xlink:href`, `src`) keeps only a relative, `http`, `https` or `mailto` URL and is otherwise written as `about:invalid#almide-blocked`. A hand-built `Element` is checked again at render.
 
 ## Install
 
 ```bash
-almide add svg@v0.1.0
+almide add svg@v0.2.0
+```
+
+An application that depends on this package grants it the SVG media type in its `almide.toml` (E118 otherwise):
+
+```toml
+[trust]
+media = { "almide/svg" = ["image/svg+xml"] }
 ```
 
 ## Usage
@@ -32,8 +41,11 @@ let chart = svg.doc(800.0, 600.0, [
   ])) |> svg.fill("#E74C3C"),
 ])
 
-// Write to file or serve over HTTP
-fs.write_text("chart.svg", svg.render(chart))
+// Serve it: Content-Type is image/svg+xml
+http.response(200, svg.render(chart))
+
+// Or write the markup to a file
+fs.write_text("chart.svg", svg.to_string(svg.render(chart)))!
 ```
 
 ## API
@@ -72,8 +84,8 @@ fs.write_text("chart.svg", svg.render(chart))
 | `rx(el, v)` / `ry(el, v)` | Corner radius |
 | `dash_array(el, pattern)` | `stroke-dasharray` |
 | `id(el, name)` / `class(el, name)` | `id` / `class` |
-| `style(el, css)` | `style` |
-| `attr(el, key, value)` | Any attribute |
+| `attr(el, key, value)` | Any other attribute (aborts on `on*`, `style`, a URL attribute or a malformed name) |
+| `url_attr(el, name, url)` | A URL attribute; unsafe schemes become `about:invalid#almide-blocked` |
 
 **Transform helpers** — return transform strings:
 
@@ -86,7 +98,8 @@ svg.scale(2.0, 1.5)           // "scale(2, 1.5)"
 **Rendering:**
 
 ```almide
-svg.render(element)  // → SVG string with indentation
+svg.render(element)                  // → SafeSvg (a Body served as image/svg+xml)
+svg.to_string(svg.render(element))   // → the SVG markup, with indentation
 ```
 
 ### `svg.path` module

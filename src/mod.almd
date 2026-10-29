@@ -1,9 +1,21 @@
-// almide/svg — SVG document generation for Almide
+// almide/svg — safe SVG document generation for Almide
 //
 //   svg.doc(800.0, 600.0, [...])           → root <svg> element
 //   svg.rect(10.0, 10.0, 200.0, 100.0)    → <rect>
 //   el |> svg.fill("#f00")                 → set fill attribute
-//   svg.render(el)                         → SVG string
+//   svg.render(el)                         → SafeSvg, a response Body
+//
+// SVG is a document a browser runs script in, so this package is the owner of
+// `image/svg+xml` (ADR-0032): `render` is the only way to make a `SafeSvg`, and
+// it writes nothing that can run. Text and attribute values are escaped;
+// element and attribute names are checked; script, event handlers, `style`,
+// and the elements that embed or animate other documents are refused; a URL
+// attribute keeps only a relative, http, https or mailto URL. The rules
+// mirror the stdlib `html` builders. An application that depends on this
+// package grants it in almide.toml:
+//
+//   [trust]
+//   media = { "almide/svg" = ["image/svg+xml"] }
 
 // ── Types ───────────────────────────────────────────
 
@@ -14,35 +26,123 @@ type Element = {
   content: String,
 }
 
+/// Rendered SVG markup. Only `render` builds one; serve it with
+/// `http.response(200, svg.render(root))`.
+mod type SafeSvg: Body = String
+
+@media_owns("image/svg+xml")
+fn SafeSvg.media_type(self) -> String = "image/svg+xml"
+
+fn SafeSvg.to_text(self) -> String = to_string(self)
+
+/// The markup inside s, as-is.
+fn to_string(s: SafeSvg) -> String = match s {
+  SafeSvg(m) => m
+}
+
 // ── Internal Helpers ────────────────────────────────
 
 local fn fmt(n: Float) -> String =
   if n == float.floor(n) then int.to_string(int.from_saturating(n))
   else float.to_string(n)
 
+// The five metacharacters, for element text and double-quoted attribute values.
 local fn escape_xml(s: String) -> String =
   s |> string.replace("&", "&amp;")
     |> string.replace("<", "&lt;")
     |> string.replace(">", "&gt;")
-
-local fn escape_attr(s: String) -> String =
-  s |> string.replace("&", "&amp;")
-    |> string.replace("<", "&lt;")
-    |> string.replace(">", "&gt;")
     |> string.replace("\"", "&quot;")
+    |> string.replace("'", "&#39;")
 
-local fn format_points(points: List[(Float, Float)]) -> String =
-  points
-    |> list.map((p) => {
-      let (x, y) = p
-      "${fmt(x)},${fmt(y)}"
-    })
-    |> list.join(" ")
+local fn ascii(c: String) -> Bool = (string.to_codepoint(c) ?? 128) < 128
+
+local fn blank(c: String) -> Bool = (string.to_codepoint(c) ?? 0) <= 32
+
+local fn name_char(c: String) -> Bool =
+  ascii(c) and (string.is_alphanumeric(c) or c == "-" or c == "_" or c == ":" or c == ".")
+
+// An element or attribute name: an ASCII letter, then ASCII letters, digits,
+// `-`, `_`, `:` or `.`. Anything else could end the tag or the attribute.
+local fn name_ok(name: String) -> Bool = match list.first(string.to_list(name)) {
+  some(c) => ascii(c) and string.is_alpha(c) and list.all(string.to_list(name), (x) => name_char(x)),
+  none => false,
+}
+
+// Elements that run script, embed another document, or rewrite attributes
+// (`set` / `animate` can turn an `href` into `javascript:`).
+local fn active_element(tag: String) -> Bool = match string.to_lower(tag) {
+  "script" => true,
+  "style" => true,
+  "foreignobject" => true,
+  "iframe" => true,
+  "object" => true,
+  "embed" => true,
+  "handler" => true,
+  "listener" => true,
+  "set" => true,
+  "animate" => true,
+  _ => false,
+}
+
+// Attributes whose value is read as a URL: only `url_attr` writes them.
+local fn url_attr_name(n: String) -> Bool = match string.to_lower(n) {
+  "href" => true,
+  "xlink:href" => true,
+  "src" => true,
+  _ => false,
+}
+
+// Attributes that run script or CSS: no builder writes them.
+local fn active_attr_name(n: String) -> Bool = {
+  let l = string.to_lower(n)
+  string.starts_with(l, "on") or l == "style"
+}
+
+local fn scheme_char(c: String) -> Bool =
+  ascii(c) and (string.is_alphanumeric(c) or c == "+" or c == "-" or c == ".")
+
+// The lowercased scheme of url, none for a relative URL; some("") for a
+// malformed or blank-bearing scheme, which no allowlist entry matches.
+local fn scheme(url: String) -> String? = {
+  let cs = string.to_list(url)
+  let i = list.find_index(cs, (c) => c == ":" or c == "/" or c == "?" or c == "#") ?? list.len(cs)
+  let head = list.take(cs, i)
+  let colon = list.get(cs, i) == some(":")
+  if colon and not list.is_empty(head) and list.all(head, (c) => scheme_char(c)) then some(string.to_lower(list.join(head, "")))
+  else if colon or list.any(head, (c) => blank(c)) then some("")
+  else none
+}
+
+local fn blocked_url() -> String = "about:invalid#almide-blocked"
+
+// url when it is relative or http, https or mailto; otherwise the inert blocked URL.
+local fn safe_url(url: String) -> String = match scheme(url) {
+  none => url,
+  some(s) => match s {
+    "http" => url,
+    "https" => url,
+    "mailto" => url,
+    _ => blocked_url(),
+  },
+}
+
+local fn check_tag(tag: String) -> Unit =
+  if not name_ok(tag) then panic("svg: `${tag}` is not an element name")
+  else if active_element(tag) then panic("svg: `<${tag}>` runs script or embeds a document; no builder writes it")
+  else ()
+
+local fn check_attr(name: String) -> Unit =
+  if not name_ok(name) then panic("svg.attr: `${name}` is not an attribute name")
+  else if active_attr_name(name) then panic("svg.attr: `${name}` runs script or styles; no builder writes it")
+  else ()
 
 // ── Element Factories ───────────────────────────────
 
-fn el(tag: String) -> Element =
+/// An element named tag; aborts on a malformed name or an element that runs script.
+fn el(tag: String) -> Element = {
+  check_tag(tag)
   Element { tag: tag, attrs: [:], children: [], content: "" }
+}
 
 fn doc(width: Float, height: Float, children: List[Element]) -> Element = {
   let base = el("svg")
@@ -106,13 +206,13 @@ fn defs(children: List[Element]) -> Element = {
 
 fn use_ref(href: String, x: Float, y: Float) -> Element =
   el("use")
-    |> attr("href", href)
+    |> url_attr("href", href)
     |> attr("x", fmt(x))
     |> attr("y", fmt(y))
 
 fn image(href: String, x: Float, y: Float, width: Float, height: Float) -> Element =
   el("image")
-    |> attr("href", href)
+    |> url_attr("href", href)
     |> attr("x", fmt(x))
     |> attr("y", fmt(y))
     |> attr("width", fmt(width))
@@ -120,8 +220,18 @@ fn image(href: String, x: Float, y: Float, width: Float, height: Float) -> Eleme
 
 // ── Attribute Modifiers (pipe-friendly) ─────────────
 
-fn attr(element: Element, key: String, value: String) -> Element =
-  { ...element, attrs: map.set(element.attrs, key, value) }
+/// key="value" on element, value escaped; aborts on a URL, event-handler, `style` or malformed name.
+fn attr(element: Element, key: String, value: String) -> Element = {
+  check_attr(key)
+  if url_attr_name(key) then panic("svg.attr: `${key}` takes a URL; use svg.url_attr")
+  else { ...element, attrs: map.set(element.attrs, key, value) }
+}
+
+/// name="url" on element; url kept only if relative or http, https or mailto, else about:invalid#almide-blocked.
+fn url_attr(element: Element, name: String, url: String) -> Element = {
+  check_attr(name)
+  { ...element, attrs: map.set(element.attrs, name, safe_url(url)) }
+}
 
 fn fill(element: Element, color: String) -> Element =
   attr(element, "fill", color)
@@ -165,9 +275,6 @@ fn dash_array(element: Element, pattern: String) -> Element =
 fn clip_path(element: Element, id_ref: String) -> Element =
   attr(element, "clip-path", "url(#${id_ref})")
 
-fn style(element: Element, css: String) -> Element =
-  attr(element, "style", css)
-
 fn view_box(element: Element, min_x: Float, min_y: Float, width: Float, height: Float) -> Element =
   attr(element, "viewBox", "${fmt(min_x)} ${fmt(min_y)} ${fmt(width)} ${fmt(height)}")
 
@@ -201,10 +308,12 @@ fn scale_uniform(s: Float) -> String =
 
 // ── Rendering ───────────────────────────────────────
 
-fn render(root: Element) -> String =
-  render_el(root, 0)
+/// The document under root as SafeSvg. Every element and attribute is checked
+/// again here, so a hand-built Element cannot carry script past it.
+fn render(root: Element) -> SafeSvg = SafeSvg(render_el(root, 0))
 
 local fn render_el(element: Element, depth: Int) -> String = {
+  check_tag(element.tag)
   let indent = string.repeat("  ", depth)
   let attrs_str = render_attrs(element.attrs)
   let has_children = not list.is_empty(element.children)
@@ -237,7 +346,9 @@ local fn render_attrs(attrs: Map[String, String]) -> String = {
     " " + (pairs
       |> list.map((pair) => {
         let (k, v) = pair
-        "${k}=\"${escape_attr(v)}\""
+        check_attr(k)
+        let value = if url_attr_name(k) then safe_url(v) else v
+        "${k}=\"${escape_xml(value)}\""
       })
       |> list.join(" "))
 }
@@ -246,26 +357,26 @@ local fn render_attrs(attrs: Map[String, String]) -> String = {
 
 test "empty rect renders self-closing" {
   let r = rect(10.0, 20.0, 100.0, 50.0)
-  let out = render(r)
+  let out = to_string(render(r))
   assert_eq(string.contains(out, "<rect"), true)
   assert_eq(string.contains(out, "/>"), true)
 }
 
 test "fill pipe sets attribute" {
   let r = rect(0.0, 0.0, 10.0, 10.0) |> fill("#f00")
-  let out = render(r)
+  let out = to_string(render(r))
   assert_eq(string.contains(out, "fill=\"#f00\""), true)
 }
 
 test "text renders with content" {
   let t = text(50.0, 100.0, "Hello")
-  let out = render(t)
+  let out = to_string(render(t))
   assert_eq(string.contains(out, ">Hello</text>"), true)
 }
 
 test "text content is XML-escaped" {
   let t = text(0.0, 0.0, "a < b & c")
-  let out = render(t)
+  let out = to_string(render(t))
   assert_eq(string.contains(out, "a &lt; b &amp; c"), true)
 }
 
@@ -274,7 +385,7 @@ test "group nests children" {
     rect(0.0, 0.0, 10.0, 10.0),
     circle(5.0, 5.0, 3.0),
   ])
-  let out = render(g)
+  let out = to_string(render(g))
   assert_eq(string.contains(out, "<g>"), true)
   assert_eq(string.contains(out, "</g>"), true)
   assert_eq(string.contains(out, "<rect"), true)
@@ -283,14 +394,14 @@ test "group nests children" {
 
 test "doc sets xmlns and viewBox" {
   let d = doc(800.0, 600.0, [])
-  let out = render(d)
+  let out = to_string(render(d))
   assert_eq(string.contains(out, "xmlns="), true)
   assert_eq(string.contains(out, "viewBox=\"0 0 800 600\""), true)
 }
 
 test "fmt strips trailing .0 for integers" {
   let r = rect(10.0, 20.0, 100.0, 50.0)
-  let out = render(r)
+  let out = to_string(render(r))
   assert_eq(string.contains(out, "x=\"10\""), true)
   assert_eq(string.contains(out, "y=\"20\""), true)
 }
@@ -301,7 +412,7 @@ test "chained attributes via pipe" {
     |> stroke("#000")
     |> stroke_width(2.0)
     |> opacity(0.5)
-  let out = render(r)
+  let out = to_string(render(r))
   assert_eq(string.contains(out, "fill=\"#333\""), true)
   assert_eq(string.contains(out, "stroke=\"#000\""), true)
   assert_eq(string.contains(out, "stroke-width=\"2\""), true)
@@ -310,7 +421,7 @@ test "chained attributes via pipe" {
 
 test "polygon renders points" {
   let p = polygon([(0.0, 0.0), (100.0, 0.0), (50.0, 80.0)])
-  let out = render(p)
+  let out = to_string(render(p))
   assert_eq(string.contains(out, "points=\"0,0 100,0 50,80\""), true)
 }
 
@@ -326,13 +437,13 @@ test "nested groups indent correctly" {
       circle(5.0, 5.0, 3.0),
     ]),
   ])
-  let out = render(g)
+  let out = to_string(render(g))
   assert_eq(string.contains(out, "    <circle"), true)
 }
 
 test "el creates arbitrary elements" {
   let custom = el("marker") |> id("arrow") |> attr("markerWidth", "10")
-  let out = render(custom)
+  let out = to_string(render(custom))
   assert_eq(string.contains(out, "<marker"), true)
   assert_eq(string.contains(out, "id=\"arrow\""), true)
 }
@@ -340,14 +451,14 @@ test "el creates arbitrary elements" {
 test "add_child appends to children" {
   let g = group([rect(0.0, 0.0, 10.0, 10.0)])
     |> add_child(circle(5.0, 5.0, 3.0))
-  let out = render(g)
+  let out = to_string(render(g))
   assert_eq(string.contains(out, "<rect"), true)
   assert_eq(string.contains(out, "<circle"), true)
 }
 
 test "attribute escaping in values" {
   let r = rect(0.0, 0.0, 10.0, 10.0) |> attr("data-info", "a\"b&c")
-  let out = render(r)
+  let out = to_string(render(r))
   assert_eq(string.contains(out, "data-info=\"a&quot;b&amp;c\""), true)
 }
 
@@ -356,7 +467,7 @@ test "doc with children renders nested" {
     rect(10.0, 10.0, 100.0, 50.0) |> fill("#4A90D9"),
     text(200.0, 150.0, "Hello") |> font_size(24.0),
   ])
-  let out = render(d)
+  let out = to_string(render(d))
   assert_eq(string.contains(out, "<svg"), true)
   assert_eq(string.contains(out, "</svg>"), true)
   assert_eq(string.contains(out, "  <rect"), true)
