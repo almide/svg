@@ -1,0 +1,58 @@
+// SafeSvg is the only output of render, and render writes nothing a browser
+// runs: the rules mirror the stdlib html builders (ADR-0032).
+import self as svg
+import http
+import testing
+
+fn square() -> svg.Element = svg.rect(0.0, 0.0, 1.0, 1.0)
+
+fn hand_built_script() -> svg.Element = { ...svg.el("g"), tag: "script" }
+
+fn hand_built_handler() -> svg.Element = { ...square(), attrs: map.set(square().attrs, "onclick", "alert(1)") }
+
+fn hand_built_href() -> svg.Element = { ...svg.el("a"), attrs: map.set(svg.el("a").attrs, "href", "javascript:alert(1)") }
+
+test "render is a Body served as image/svg+xml" {
+  let resp = http.response(200, svg.render(square()))
+  assert_eq(http.header(resp, "Content-Type") ?? "none", "image/svg+xml")
+  testing.assert_contains(http.body(resp), "<rect")
+}
+
+test "text and attribute values are escaped" {
+  let t = svg.text(0.0, 0.0, "<script>alert(1)</script>") |> svg.attr("data-x", "\"><script>'")
+  let out = svg.to_string(svg.render(t))
+  assert(not string.contains(out, "<script"))
+  testing.assert_contains(out, "&lt;script&gt;alert(1)&lt;/script&gt;")
+  testing.assert_contains(out, "data-x=\"&quot;&gt;&lt;script&gt;&#39;\"")
+}
+
+test "script, style and embedding elements are refused" {
+  testing.assert_aborts("runs script or embeds a document", () => svg.el("script"))
+  testing.assert_aborts("runs script or embeds a document", () => svg.el("Style"))
+  testing.assert_aborts("runs script or embeds a document", () => svg.el("foreignObject"))
+  testing.assert_aborts("runs script or embeds a document", () => svg.el("set"))
+  testing.assert_aborts("runs script or embeds a document", () => svg.el("animate"))
+  testing.assert_aborts("is not an element name", () => svg.el("g><script"))
+}
+
+test "event handlers, style and malformed names are refused" {
+  testing.assert_aborts("runs script or styles", () => square() |> svg.attr("onload", "alert(1)"))
+  testing.assert_aborts("runs script or styles", () => square() |> svg.attr("STYLE", "fill:red"))
+  testing.assert_aborts("is not an attribute name", () => square() |> svg.attr("x\" onload=\"y", "1"))
+  testing.assert_aborts("takes a URL", () => square() |> svg.attr("href", "#a"))
+  testing.assert_aborts("runs script or styles", () => square() |> svg.url_attr("onclick", "#a"))
+}
+
+test "a URL attribute keeps only relative, http, https and mailto URLs" {
+  testing.assert_contains(svg.to_string(svg.render(svg.use_ref("#icon", 0.0, 0.0))), "href=\"#icon\"")
+  testing.assert_contains(svg.to_string(svg.render(svg.image("https://example.com/a.png", 0.0, 0.0, 1.0, 1.0))), "href=\"https://example.com/a.png\"")
+  testing.assert_contains(svg.to_string(svg.render(svg.image("javascript:alert(1)", 0.0, 0.0, 1.0, 1.0))), "href=\"about:invalid#almide-blocked\"")
+  testing.assert_contains(svg.to_string(svg.render(svg.image("data:image/svg+xml,<svg onload=alert(1)>", 0.0, 0.0, 1.0, 1.0))), "href=\"about:invalid#almide-blocked\"")
+  testing.assert_contains(svg.to_string(svg.render(svg.el("a") |> svg.url_attr("xlink:href", " java\tscript:alert(1)"))), "about:invalid#almide-blocked")
+}
+
+test "a hand-built Element is checked again at render" {
+  testing.assert_aborts("runs script or embeds a document", () => svg.render(hand_built_script()))
+  testing.assert_aborts("runs script or styles", () => svg.render(hand_built_handler()))
+  testing.assert_contains(svg.to_string(svg.render(hand_built_href())), "about:invalid#almide-blocked")
+}

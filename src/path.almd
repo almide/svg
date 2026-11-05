@@ -6,10 +6,8 @@
 
 // ── Helpers ─────────────────────────────────────────
 
-// Whole numbers print without ".0". float.to_fixed exists on every dialect
-// epoch (float.to_int is gone at epoch 15); "+ 0.0" turns -0.0 into "0".
 local fn fmt(n: Float) -> String =
-  if n == float.floor(n) then float.to_fixed(n + 0.0, 0)
+  if n == float.floor(n) then int.to_string(int.from_saturating(n))
   else float.to_string(n)
 
 // ── Commands ────────────────────────────────────────
